@@ -68,6 +68,11 @@ class OCIInstanceCreator:
             "instance_name": config_data.get("instance_name", "free-tier-instance")
         }
         
+        # Shape config
+        shape_config_data = config_data.get("shape_config", {})
+        self.ocpus = shape_config_data.get("ocpus", 1)
+        self.memory_gb = shape_config_data.get("memory_in_gbs", 1)
+        
         # Deneme ayarları
         self.max_attempts = int(config_data.get("max_attempts", 50))
         self.retry_interval = int(config_data.get("retry_interval", 300))
@@ -96,6 +101,20 @@ class OCIInstanceCreator:
         """Instance oluşturma denemesi"""
         instance_name = f"{self.instance_config['instance_name']}-{attempt_number}-{int(time.time())}"
         
+        # Shape config'i ayarla
+        if "A1.Flex" in self.instance_config['shape']:
+            # A1.Flex için özel shape config
+            shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
+                ocpus=self.ocpus,
+                memory_in_gbs=self.memory_gb
+            )
+        else:
+            # Diğer shape'ler için varsayılan
+            shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
+                ocpus=self.ocpus,
+                memory_in_gbs=self.memory_gb
+            )
+        
         # Instance detayları
         instance_details = oci.core.models.LaunchInstanceDetails(
             display_name=instance_name,
@@ -110,10 +129,7 @@ class OCIInstanceCreator:
             metadata={
                 "ssh_authorized_keys": self.instance_config['ssh_key']
             },
-            shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-                ocpus=1,
-                memory_in_gbs=1
-            ),
+            shape_config=shape_config,
             create_vnic_details=oci.core.models.CreateVnicDetails(
                 subnet_id=self.instance_config['subnet_id'],
                 assign_public_ip=True
@@ -121,7 +137,9 @@ class OCIInstanceCreator:
         )
         
         try:
-            self.update_status("trying", f"Deneme #{attempt_number}: {instance_name} oluşturuluyor...", 
+            self.update_status("trying", f"Deneme #{attempt_number}: {instance_name} oluşturuluyor...\n"
+                                      f"Shape: {self.instance_config['shape']}\n"
+                                      f"OCPU: {self.ocpus}, RAM: {self.memory_gb} GB", 
                               progress=int((attempt_number/self.max_attempts)*100))
             
             response = self.compute_client.launch_instance(instance_details)
@@ -132,6 +150,7 @@ class OCIInstanceCreator:
                     f"✓ BAŞARILI! Instance oluşturuldu!\n"
                     f"Instance ID: {self.instance_id}\n"
                     f"Instance Adı: {instance_name}\n"
+                    f"Shape: {self.instance_config['shape']} ({self.ocpus} OCPU, {self.memory_gb} GB RAM)\n"
                     f"Durum: {response.data.lifecycle_state}",
                     progress=100)
                 return True
@@ -167,7 +186,7 @@ class OCIInstanceCreator:
             
             free_instances = []
             for instance in list_instances_response.data:
-                if "VM.Standard.E2.1.Micro" in instance.shape:
+                if "VM.Standard.E2.1.Micro" in instance.shape or "VM.Standard.A1.Flex" in instance.shape:
                     free_instances.append({
                         "name": instance.display_name,
                         "id": instance.id,
@@ -309,7 +328,10 @@ def get_task_status(task_id):
         'attempts': creator.attempts,
         'max_attempts': creator.max_attempts,
         'instance_id': creator.instance_id,
-        'last_update': creator.last_update.strftime('%Y-%m-%d %H:%M:%S')
+        'last_update': creator.last_update.strftime('%Y-%m-%d %H:%M:%S'),
+        'shape': creator.instance_config['shape'],
+        'ocpus': creator.ocpus,
+        'memory_gb': creator.memory_gb
     })
 
 @app.route('/api/stop_task/<task_id>', methods=['POST'])
@@ -367,8 +389,8 @@ def get_regions():
 def get_free_shapes():
     """Ücretsiz shape'leri getir"""
     shapes = [
-        {"id": "VM.Standard.E2.1.Micro", "name": "VM.Standard.E2.1.Micro (Always Free)"},
-        {"id": "VM.Standard.A1.Flex", "name": "VM.Standard.A1.Flex (4 OCPU, 24 GB RAM - Always Free)"}
+        {"id": "VM.Standard.E2.1.Micro", "name": "VM.Standard.E2.1.Micro (1 OCPU, 1 GB RAM - Always Free)"},
+        {"id": "VM.Standard.A1.Flex", "name": "VM.Standard.A1.Flex (1-4 OCPU, 6-24 GB RAM - Always Free Monthly Limit)"}
     ]
     
     return jsonify({'success': True, 'shapes': shapes})
@@ -402,4 +424,4 @@ if __name__ == '__main__':
     cleanup.start()
     
     # Flask uygulamasını başlat
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)
