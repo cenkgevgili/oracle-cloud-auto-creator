@@ -1,0 +1,12 @@
+[Unit]
+Description=Oracle Cloud Instance Creator
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/oracle-cloud-auto-creator
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
