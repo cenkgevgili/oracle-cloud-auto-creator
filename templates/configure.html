@@ -579,9 +579,16 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                     body: JSON.stringify(taskData)
                 });
 
-                const data = await response.json();
+                let data = null;
+                try {
+                    data = await response.json();
+                } catch (jsonError) {
+                    modal.hide();
+                    alert('Sunucudan geçersiz yanıt alındı.');
+                    return;
+                }
 
-                if (data.success) {
+                if (response.ok && data.success) {
                     modal.hide();
                     window.location.href = `/status?task_id=${data.task_id}`;
                 } else {
@@ -594,10 +601,17 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
             }
         }
 
+        const sensitiveFields = ['private_key'];
+
         // Ayarları kaydet
         function saveConfig() {
-            localStorage.setItem('oci_config', JSON.stringify(configData));
-            alert('Ayarlar tarayıcı belleğine kaydedildi!');
+            const safeConfig = { ...configData };
+            sensitiveFields.forEach(field => {
+                delete safeConfig[field];
+            });
+
+            localStorage.setItem('oci_config', JSON.stringify(safeConfig));
+            alert('Ayarlar tarayıcı belleğine kaydedildi (private key güvenlik için kaydedilmedi).');
         }
 
         // Ayarları yükle
@@ -606,6 +620,13 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
             if (saved) {
                 try {
                     const savedConfig = JSON.parse(saved);
+
+                    // Eski sürümde kaydedilmiş hassas alanları temizle
+                    sensitiveFields.forEach(field => {
+                        if (field in savedConfig) {
+                            delete savedConfig[field];
+                        }
+                    });
 
                     // configData'yı güncelle
                     Object.keys(savedConfig).forEach(key => {
