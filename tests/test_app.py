@@ -48,6 +48,14 @@ class AppApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("private_key", response.get_json()["error"])
 
+    def test_get_regions_includes_jeddah(self):
+        response = self.client.get("/api/get_regions")
+        self.assertEqual(response.status_code, 200)
+
+        data = response.get_json()
+        regions = data["regions"]
+        self.assertTrue(any(region["id"] == "me-jeddah-1" for region in regions))
+
     def test_start_task_rejects_invalid_a1_ratio(self):
         payload = valid_payload(
             shape="VM.Standard.A1.Flex",

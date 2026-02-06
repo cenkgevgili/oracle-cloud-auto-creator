@@ -585,6 +585,7 @@ def get_regions():
         {"id": "ap-mumbai-1", "name": "India West (Mumbai)"},
         {"id": "ap-tokyo-1", "name": "Japan East (Tokyo)"},
         {"id": "ap-seoul-1", "name": "South Korea Central (Seoul)"},
+        {"id": "me-jeddah-1", "name": "Saudi Arabia West (Jeddah)"},
         {"id": "sa-saopaulo-1", "name": "Brazil East (Sao Paulo)"},
     ]
     return jsonify({"success": True, "regions": regions})

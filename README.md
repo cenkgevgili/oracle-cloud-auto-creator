@@ -43,7 +43,14 @@ docker compose up --build
 
 Bu repo `.devcontainer/devcontainer.json` içerir. GitHub Codespaces üzerinde:
 
-1. GitHub repo sayfasında `Code` -> `Codespaces` -> `Create codespace on main`
+En hızlı yol:
+
+- Doğrudan bu linki aç: `https://codespaces.new/cenkgevgili/oracle-cloud-auto-creator`
+- Açılan sayfada `Create codespace` ile başlat
+
+Alternatif adımlar:
+
+1. GitHub repo sayfasında `Code` -> `Codespaces` -> `Create codespace on master`
 2. Container açıldığında bağımlılıklar otomatik kurulur
 3. Terminalde çalıştır:
 
