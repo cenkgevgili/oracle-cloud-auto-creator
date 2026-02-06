@@ -19,7 +19,7 @@ Oracle Cloud Always Free Tier için instance oluşturmayı, kapasite bulunana ka
 ```env
 SESSION_SECRET=change-me
 FLASK_DEBUG=false
-PORT=5000
+PORT=5050
 ```
 
 ## Yerelde Çalıştırma
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Uygulama varsayılan olarak `http://127.0.0.1:5000` adresinde açılır.
+Uygulama varsayılan olarak `http://127.0.0.1:5050` adresinde açılır.
 
 ## Docker ile Çalıştırma
 
@@ -58,7 +58,7 @@ Alternatif adımlar:
 python app.py
 ```
 
-4. `5000` portunu public/preview olarak açıp web arayüzüne eriş
+4. `5050` portunu public/preview olarak açıp web arayüzüne eriş
 
 ## CI (GitHub Actions)
 

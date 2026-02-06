@@ -609,6 +609,6 @@ def get_free_shapes():
 
 if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
-    port = parse_int(os.environ.get("PORT"), 5000, minimum=1, maximum=65535)
+    port = parse_int(os.environ.get("PORT"), 5050, minimum=1, maximum=65535)
     debug = os.environ.get("FLASK_DEBUG", "false").lower() in {"1", "true", "yes"}
     app.run(host=host, port=port, debug=debug)
