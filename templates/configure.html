@@ -328,13 +328,18 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
 
                                 <div class="alert alert-info">
                                     <h6><i class="fas fa-question-circle me-2"></i>SSH Key Nasıl Oluşturulur?</h6>
-                                    <p class="mb-2">Linux/Mac:</p>
+                                    <p class="mb-2">macOS / Linux:</p>
                                     <pre
-                                        class="bg-dark text-light p-2 rounded">ssh-keygen -t rsa -b 2048 -C "oracle-cloud"</pre>
+                                        class="bg-dark text-light p-2 rounded mb-2">ssh-keygen -t ed25519 -C "oracle-cloud"</pre>
+                                    <pre class="bg-dark text-light p-2 rounded">cat ~/.ssh/id_ed25519.pub</pre>
                                     <p class="mb-2 mt-3">Windows (PowerShell):</p>
-                                    <pre class="bg-dark text-light p-2 rounded">ssh-keygen -t rsa -b 2048</pre>
-                                    <p class="mb-0 mt-2">Oluşan <code>id_rsa.pub</code> dosyasının içeriğini yukarıya
-                                        yapıştırın.</p>
+                                    <pre
+                                        class="bg-dark text-light p-2 rounded mb-2">ssh-keygen -t ed25519 -C "oracle-cloud"</pre>
+                                    <pre class="bg-dark text-light p-2 rounded">Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub</pre>
+                                    <p class="mb-0 mt-2">
+                                        Forma <code>.pub</code> çıktısının tek satır tamamını yapıştırın.
+                                        <code>BEGIN PRIVATE KEY</code> ile başlayan private key'i buraya girmeyin.
+                                    </p>
                                 </div>
                             </div>
 
@@ -384,6 +389,9 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                                     <button class="btn btn-outline-secondary" id="validateBtn">
                                         <i class="fas fa-check-circle me-2"></i>Bilgileri Doğrula
                                     </button>
+                                    <button class="btn btn-outline-success ms-2" id="testConnectionBtn" disabled>
+                                        <i class="fas fa-plug me-2"></i>Oracle Bağlantısını Test Et
+                                    </button>
                                     <button class="btn btn-outline-info ms-2" id="saveConfigBtn">
                                         <i class="fas fa-save me-2"></i>Ayarları Kaydet
                                     </button>
@@ -392,6 +400,7 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                                     <i class="fas fa-play me-2"></i>Otomatik Denemeyi Başlat
                                 </button>
                             </div>
+                            <div id="connectionTestResult" class="mt-3"></div>
                         </div>
                     </div>
                 </div>
@@ -436,6 +445,23 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
             ssh_public_key: '',
             max_attempts: 50,
             retry_interval: 300
+        };
+        const requiredFields = [
+            'user_ocid', 'tenancy_ocid', 'compartment_ocid',
+            'subnet_ocid', 'availability_domain', 'image_ocid',
+            'ssh_public_key', 'fingerprint', 'private_key'
+        ];
+        const fieldLabels = {
+            user_ocid: 'User OCID',
+            tenancy_ocid: 'Tenancy OCID',
+            compartment_ocid: 'Compartment OCID',
+            subnet_ocid: 'Subnet OCID',
+            availability_domain: 'Availability Domain',
+            image_ocid: 'Image OCID',
+            ssh_public_key: 'SSH Public Key',
+            fingerprint: 'Fingerprint',
+            private_key: 'Private Key',
+            region: 'Region'
         };
 
         // Sayfa yüklendiğinde çalışacak fonksiyon
@@ -520,6 +546,9 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                 }
             });
 
+            // Test butonu
+            document.getElementById('testConnectionBtn').addEventListener('click', testConnection);
+
             // Kaydet butonu
             document.getElementById('saveConfigBtn').addEventListener('click', saveConfig);
 
@@ -530,17 +559,12 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
         // Config güncelle
         function updateConfig(key, value) {
             configData[key] = value;
+            renderConnectionTestResult();
             validateForm();
         }
 
         // Form doğrulama
         function validateForm() {
-            const requiredFields = [
-                'user_ocid', 'tenancy_ocid', 'compartment_ocid',
-                'subnet_ocid', 'availability_domain', 'image_ocid',
-                'ssh_public_key', 'fingerprint', 'private_key'
-            ];
-
             let isValid = true;
             requiredFields.forEach(field => {
                 if (!configData[field] || configData[field].toString().trim() === '') {
@@ -549,7 +573,143 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
             });
 
             document.getElementById('startTaskBtn').disabled = !isValid;
+            document.getElementById('testConnectionBtn').disabled = !isValid;
             return isValid;
+        }
+
+        function buildTaskData() {
+            return {
+                ...configData,
+                shape_config: {
+                    ocpus: configData.ocpus,
+                    memory_in_gbs: configData.memory_gb
+                }
+            };
+        }
+
+        function escapeHtml(value) {
+            return String(value || '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function formatFieldList(fields) {
+            if (!Array.isArray(fields) || fields.length === 0) {
+                return '';
+            }
+            return fields
+                .map(field => fieldLabels[field] || field)
+                .join(', ');
+        }
+
+        function clearFieldValidation(fields = null) {
+            const ids = Array.isArray(fields) && fields.length > 0 ? fields : Object.keys(fieldLabels);
+            ids.forEach(fieldId => {
+                const element = document.getElementById(fieldId);
+                if (element) {
+                    element.classList.remove('is-invalid');
+                }
+            });
+        }
+
+        function highlightInvalidFields(fields) {
+            clearFieldValidation();
+            if (!Array.isArray(fields)) {
+                return;
+            }
+            fields.forEach(fieldId => {
+                const element = document.getElementById(fieldId);
+                if (element) {
+                    element.classList.add('is-invalid');
+                }
+            });
+        }
+
+        function renderConnectionTestResult(result = null) {
+            const container = document.getElementById('connectionTestResult');
+            if (!result) {
+                container.innerHTML = '';
+                clearFieldValidation();
+                return;
+            }
+
+            const isSuccess = Boolean(result.success && result.connected);
+            const alertClass = isSuccess ? 'alert-success' : 'alert-danger';
+            const iconClass = isSuccess ? 'fa-check-circle' : 'fa-times-circle';
+            const checks = Array.isArray(result.checks) ? result.checks : [];
+            const invalidFieldIds = Array.isArray(result.invalid_fields) ? result.invalid_fields : [];
+            const invalidFields = formatFieldList(invalidFieldIds);
+            if (isSuccess) {
+                clearFieldValidation();
+            } else {
+                highlightInvalidFields(invalidFieldIds);
+            }
+            const checksHtml = checks.length
+                ? `<ul class="mb-0 mt-2">${checks.map(check =>
+                    `<li>${check.success ? '✓' : '✗'} ${escapeHtml(check.name)}: ${escapeHtml(check.message)}</li>`
+                ).join('')}</ul>`
+                : '';
+            const invalidFieldsHtml = invalidFields
+                ? `<div class="mt-2"><strong>Problemli alanlar:</strong> ${escapeHtml(invalidFields)}</div>`
+                : '';
+
+            container.innerHTML = `
+                <div class="alert ${alertClass} mb-0">
+                    <div><i class="fas ${iconClass} me-2"></i>${escapeHtml(result.message || 'Bağlantı testi tamamlandı.')}</div>
+                    ${invalidFieldsHtml}
+                    ${checksHtml}
+                </div>
+            `;
+        }
+
+        async function testConnection() {
+            if (!validateForm()) {
+                alert('Önce tüm zorunlu alanları doldurun.');
+                return;
+            }
+
+            const testButton = document.getElementById('testConnectionBtn');
+            const originalButtonHtml = testButton.innerHTML;
+            testButton.disabled = true;
+            testButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>Test ediliyor...';
+            renderConnectionTestResult();
+
+            try {
+                const response = await fetch('/api/test_connection', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(buildTaskData())
+                });
+
+                const data = await response.json();
+                if (response.ok && data.success) {
+                    renderConnectionTestResult(data);
+                } else {
+                    renderConnectionTestResult({
+                        success: false,
+                        connected: false,
+                        message: data.message || data.error || 'Bağlantı testi başarısız oldu.',
+                        invalid_fields: data.invalid_fields || [],
+                        checks: data.checks || []
+                    });
+                }
+            } catch (error) {
+                renderConnectionTestResult({
+                    success: false,
+                    connected: false,
+                    message: `Bağlantı testi sırasında hata oluştu: ${error.message}`,
+                    invalid_fields: [],
+                    checks: []
+                });
+            } finally {
+                testButton.innerHTML = originalButtonHtml;
+                validateForm();
+            }
         }
 
         // Task başlat
@@ -558,15 +718,6 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                 alert('Lütfen tüm gerekli alanları doldurun!');
                 return;
             }
-
-            // Shape_config bilgilerini ekle
-            const taskData = {
-                ...configData,
-                shape_config: {
-                    ocpus: configData.ocpus,
-                    memory_in_gbs: configData.memory_gb
-                }
-            };
 
             const modal = new bootstrap.Modal(document.getElementById('startingModal'));
             modal.show();
@@ -577,7 +728,7 @@ MzEfYyjiWA4R4/M2bS1GBMZLJ1K5D...
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify(taskData)
+                    body: JSON.stringify(buildTaskData())
                 });
 
                 let data = null;

@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 os.environ["ENABLE_TASK_CLEANUP_THREAD"] = "false"
@@ -37,6 +38,11 @@ class AppApiTests(unittest.TestCase):
 
     def test_start_task_requires_json(self):
         response = self.client.post("/api/start_task", data="hello", headers={"Content-Type": "text/plain"})
+        self.assertEqual(response.status_code, 415)
+        self.assertFalse(response.get_json()["success"])
+
+    def test_test_connection_requires_json(self):
+        response = self.client.post("/api/test_connection", data="hello", headers={"Content-Type": "text/plain"})
         self.assertEqual(response.status_code, 415)
         self.assertFalse(response.get_json()["success"])
 
@@ -76,6 +82,50 @@ class AppApiTests(unittest.TestCase):
         self.assertFalse(response.get_json()["success"])
         with app_module.active_tasks_lock:
             self.assertEqual(len(app_module.active_tasks), 0)
+
+    def test_test_connection_rejects_invalid_ssh_key_format(self):
+        payload = valid_payload(ssh_public_key="not-a-valid-ssh-key")
+        response = self.client.post("/api/test_connection", json=payload)
+
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertFalse(data["success"])
+        self.assertIn("ssh_public_key", data["invalid_fields"])
+
+    @patch("app.oci.core.ComputeClient")
+    @patch("app.oci.core.VirtualNetworkClient")
+    @patch("app.oci.identity.IdentityClient")
+    def test_test_connection_success(
+        self,
+        identity_client_mock,
+        virtual_network_client_mock,
+        compute_client_mock,
+    ):
+        identity_client = MagicMock()
+        identity_client.list_availability_domains.return_value = MagicMock(
+            data=[SimpleNamespace(name="Uocm:US-ASHBURN-AD-1")]
+        )
+        identity_client_mock.return_value = identity_client
+
+        virtual_network_client = MagicMock()
+        virtual_network_client.get_subnet.return_value = MagicMock(
+            data=SimpleNamespace(compartment_id="ocid1.compartment.oc1..example")
+        )
+        virtual_network_client_mock.return_value = virtual_network_client
+
+        compute_client = MagicMock()
+        compute_client.get_image.return_value = MagicMock(
+            data=SimpleNamespace(lifecycle_state="AVAILABLE")
+        )
+        compute_client_mock.return_value = compute_client
+
+        response = self.client.post("/api/test_connection", json=valid_payload())
+        data = response.get_json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(data["success"])
+        self.assertTrue(data["connected"])
+        self.assertEqual(data["invalid_fields"], [])
 
 
 class CreatorRuntimeTests(unittest.TestCase):

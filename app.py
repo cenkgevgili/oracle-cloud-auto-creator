@@ -29,6 +29,24 @@ TERMINAL_STATES = {"success", "failed", "error", "stopped"}
 VALID_SHAPES = {"VM.Standard.E2.1.Micro", "VM.Standard.A1.Flex"}
 TASK_CLEANUP_SECONDS = int(os.environ.get("TASK_CLEANUP_SECONDS", "10800"))
 TASK_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("TASK_CLEANUP_INTERVAL_SECONDS", "3600"))
+REQUIRED_FIELDS = [
+    "user_ocid",
+    "tenancy_ocid",
+    "compartment_ocid",
+    "subnet_ocid",
+    "availability_domain",
+    "image_ocid",
+    "ssh_public_key",
+    "fingerprint",
+    "private_key",
+]
+SUPPORTED_SSH_KEY_TYPES = {
+    "ssh-rsa",
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+}
 
 # Flask uygulamasını oluştur
 app = Flask(__name__)
@@ -69,23 +87,112 @@ def parse_int(value, default, minimum=None, maximum=None):
     return parsed
 
 
-def validate_start_payload(data):
-    """API payload doğrulaması."""
-    required_fields = [
-        "user_ocid",
-        "tenancy_ocid",
-        "compartment_ocid",
-        "subnet_ocid",
-        "availability_domain",
-        "image_ocid",
-        "ssh_public_key",
-        "fingerprint",
-        "private_key",
-    ]
-    for field in required_fields:
+def get_missing_required_fields(data):
+    """Eksik veya boş zorunlu alanları döndür."""
+    missing_fields = []
+    for field in REQUIRED_FIELDS:
         value = data.get(field)
         if not isinstance(value, str) or not value.strip():
-            return f"Eksik veya geçersiz alan: {field}"
+            missing_fields.append(field)
+    return missing_fields
+
+
+def build_oci_config(data):
+    """OCI SDK için config oluştur."""
+    return {
+        "user": data.get("user_ocid", "").strip(),
+        "key_content": data.get("private_key", "").strip(),
+        "fingerprint": data.get("fingerprint", "").strip(),
+        "tenancy": data.get("tenancy_ocid", "").strip(),
+        "region": data.get("region", "us-ashburn-1").strip(),
+    }
+
+
+def validate_ssh_public_key_format(ssh_public_key):
+    """SSH public key formatını kontrol et."""
+    if not isinstance(ssh_public_key, str):
+        return False, "SSH Public Key metin olmalıdır."
+
+    parts = ssh_public_key.strip().split()
+    if len(parts) < 2:
+        return False, "SSH Public Key eksik görünüyor. Format: ssh-ed25519 AAAA... kullanıcı@cihaz"
+
+    key_type, key_value = parts[0], parts[1]
+    if key_type not in SUPPORTED_SSH_KEY_TYPES:
+        return False, (
+            "SSH Public Key tipi desteklenmiyor. Desteklenen tipler: "
+            "ssh-ed25519, ssh-rsa, ecdsa-sha2-nistp256/384/521"
+        )
+
+    if len(key_value) < 16:
+        return False, "SSH Public Key değeri eksik veya bozuk görünüyor."
+
+    return True, "SSH Public Key formatı geçerli."
+
+
+def classify_oci_service_error(error, step):
+    """OCI ServiceError için alan bazlı kullanıcı mesajı üret."""
+    status = getattr(error, "status", None)
+    code = getattr(error, "code", "") or "unknown"
+    message = str(getattr(error, "message", error))
+    status_text = f"HTTP {status}" if status is not None else "HTTP bilinmiyor"
+    suffix = f" ({status_text}, code: {code})"
+
+    if step == "auth":
+        fields = ["user_ocid", "tenancy_ocid", "fingerprint", "private_key", "region"]
+        if status == 401:
+            detail = "Kimlik doğrulama başarısız."
+        elif status in {403, 404}:
+            detail = "Tenancy/User/Region bilgileriyle yetki doğrulanamadı."
+        else:
+            detail = "OCI kimlik doğrulama sırasında hata oluştu."
+        return fields, f"{detail}{suffix}"
+
+    if step == "subnet":
+        fields = ["subnet_ocid", "compartment_ocid", "region"]
+        if status == 404:
+            detail = "Subnet bulunamadı veya bu kullanıcı tarafından erişilemiyor."
+        elif status in {401, 403}:
+            detail = "Subnet için yetki doğrulaması başarısız."
+        else:
+            detail = "Subnet kontrolünde hata oluştu."
+        return fields, f"{detail}{suffix}"
+
+    if step == "image":
+        fields = ["image_ocid", "region"]
+        if status == 404:
+            detail = "Image OCID bulunamadı."
+        elif status in {401, 403}:
+            detail = "Image bilgisine erişim yetkisi yok."
+        else:
+            detail = "Image kontrolünde hata oluştu."
+        return fields, f"{detail}{suffix}"
+
+    return [], f"Beklenmeyen OCI hatası: {message[:200]}{suffix}"
+
+
+def build_connection_test_failure(message, invalid_fields, checks, status_code=400):
+    """Connection test için standart başarısız payload."""
+    unique_fields = sorted(set(invalid_fields))
+    return (
+        jsonify(
+            {
+                "success": False,
+                "connected": False,
+                "message": message,
+                "invalid_fields": unique_fields,
+                "checks": checks,
+            }
+        ),
+        status_code,
+    )
+
+
+def validate_start_payload(data):
+    """API payload doğrulaması."""
+    missing_fields = get_missing_required_fields(data)
+    if missing_fields:
+        return f"Eksik veya geçersiz alan: {missing_fields[0]}"
 
     shape = data.get("shape", "VM.Standard.E2.1.Micro")
     if shape not in VALID_SHAPES:
@@ -489,6 +596,202 @@ def status_page():
 def health():
     """Basit health endpoint."""
     return jsonify({"success": True, "status": "ok"})
+
+
+@app.route("/api/test_connection", methods=["POST"])
+def test_connection():
+    """Girilen OCI bilgileriyle bağlantı testi yap."""
+    if not request.is_json:
+        return jsonify({"success": False, "error": "Content-Type application/json olmalıdır"}), 415
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Geçersiz JSON payload"}), 400
+
+    checks = []
+    missing_fields = get_missing_required_fields(data)
+    if missing_fields:
+        checks.append(
+            {
+                "name": "Zorunlu alan kontrolü",
+                "success": False,
+                "message": "Bazı zorunlu alanlar boş veya geçersiz.",
+            }
+        )
+        return build_connection_test_failure(
+            "Bağlantı testi başlatılamadı. Eksik alanları doldurun.",
+            invalid_fields=missing_fields,
+            checks=checks,
+            status_code=400,
+        )
+
+    ssh_ok, ssh_message = validate_ssh_public_key_format(data.get("ssh_public_key", ""))
+    if not ssh_ok:
+        checks.append({"name": "SSH Public Key formatı", "success": False, "message": ssh_message})
+        return build_connection_test_failure(
+            "SSH Public Key formatı hatalı.",
+            invalid_fields=["ssh_public_key"],
+            checks=checks,
+            status_code=400,
+        )
+    checks.append({"name": "SSH Public Key formatı", "success": True, "message": ssh_message})
+
+    config = build_oci_config(data)
+
+    # 1) Kimlik doğrulama + region/tenancy kontrolü
+    try:
+        identity_client = oci.identity.IdentityClient(config)
+        ad_response = identity_client.list_availability_domains(compartment_id=config["tenancy"])
+        available_ad_names = {item.name for item in ad_response.data}
+        checks.append(
+            {
+                "name": "OCI kimlik doğrulama",
+                "success": True,
+                "message": "Oracle API bağlantısı başarılı.",
+            }
+        )
+    except oci.exceptions.ServiceError as error:
+        invalid_fields, error_message = classify_oci_service_error(error, "auth")
+        checks.append({"name": "OCI kimlik doğrulama", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Oracle bağlantısı doğrulanamadı.",
+            invalid_fields=invalid_fields,
+            checks=checks,
+            status_code=400,
+        )
+    except Exception as error:
+        error_message = f"OCI kimlik doğrulama sırasında beklenmeyen hata: {str(error)[:200]}"
+        checks.append({"name": "OCI kimlik doğrulama", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Oracle bağlantısı doğrulanamadı.",
+            invalid_fields=["user_ocid", "tenancy_ocid", "fingerprint", "private_key", "region"],
+            checks=checks,
+            status_code=400,
+        )
+
+    # 2) Availability Domain kontrolü
+    availability_domain = data.get("availability_domain", "").strip()
+    if availability_domain not in available_ad_names:
+        checks.append(
+            {
+                "name": "Availability Domain kontrolü",
+                "success": False,
+                "message": "Girilen Availability Domain bu tenancy/region altında bulunamadı.",
+            }
+        )
+        return build_connection_test_failure(
+            "Availability Domain doğrulaması başarısız.",
+            invalid_fields=["availability_domain", "region"],
+            checks=checks,
+            status_code=400,
+        )
+    checks.append(
+        {
+            "name": "Availability Domain kontrolü",
+            "success": True,
+            "message": "Availability Domain bilgisi geçerli.",
+        }
+    )
+
+    # 3) Subnet kontrolü
+    subnet_compartment_id = ""
+    try:
+        virtual_network_client = oci.core.VirtualNetworkClient(config)
+        subnet_response = virtual_network_client.get_subnet(data.get("subnet_ocid", "").strip())
+        subnet_compartment_id = (getattr(subnet_response.data, "compartment_id", "") or "").strip()
+        checks.append(
+            {
+                "name": "Subnet OCID kontrolü",
+                "success": True,
+                "message": "Subnet erişilebilir.",
+            }
+        )
+    except oci.exceptions.ServiceError as error:
+        invalid_fields, error_message = classify_oci_service_error(error, "subnet")
+        checks.append({"name": "Subnet OCID kontrolü", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Subnet doğrulaması başarısız.",
+            invalid_fields=invalid_fields,
+            checks=checks,
+            status_code=400,
+        )
+    except Exception as error:
+        error_message = f"Subnet kontrolü sırasında beklenmeyen hata: {str(error)[:200]}"
+        checks.append({"name": "Subnet OCID kontrolü", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Subnet doğrulaması başarısız.",
+            invalid_fields=["subnet_ocid", "compartment_ocid", "region"],
+            checks=checks,
+            status_code=400,
+        )
+
+    # 4) Subnet ile compartment eşleşmesi
+    compartment_ocid = data.get("compartment_ocid", "").strip()
+    if subnet_compartment_id and compartment_ocid and subnet_compartment_id != compartment_ocid:
+        checks.append(
+            {
+                "name": "Compartment/Subnet eşleşmesi",
+                "success": False,
+                "message": "Subnet farklı bir compartment içinde görünüyor.",
+            }
+        )
+        return build_connection_test_failure(
+            "Compartment ve subnet bilgileri birbiriyle uyuşmuyor.",
+            invalid_fields=["compartment_ocid", "subnet_ocid"],
+            checks=checks,
+            status_code=400,
+        )
+    checks.append(
+        {
+            "name": "Compartment/Subnet eşleşmesi",
+            "success": True,
+            "message": "Compartment ve subnet bilgileri uyumlu.",
+        }
+    )
+
+    # 5) Image kontrolü
+    try:
+        compute_client = oci.core.ComputeClient(config)
+        image_response = compute_client.get_image(data.get("image_ocid", "").strip())
+        image_state = getattr(image_response.data, "lifecycle_state", None)
+        image_message = "Image OCID erişilebilir."
+        if image_state:
+            image_message = f"Image OCID erişilebilir (durum: {image_state})."
+        checks.append(
+            {
+                "name": "Image OCID kontrolü",
+                "success": True,
+                "message": image_message,
+            }
+        )
+    except oci.exceptions.ServiceError as error:
+        invalid_fields, error_message = classify_oci_service_error(error, "image")
+        checks.append({"name": "Image OCID kontrolü", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Image doğrulaması başarısız.",
+            invalid_fields=invalid_fields,
+            checks=checks,
+            status_code=400,
+        )
+    except Exception as error:
+        error_message = f"Image kontrolü sırasında beklenmeyen hata: {str(error)[:200]}"
+        checks.append({"name": "Image OCID kontrolü", "success": False, "message": error_message})
+        return build_connection_test_failure(
+            "Image doğrulaması başarısız.",
+            invalid_fields=["image_ocid", "region"],
+            checks=checks,
+            status_code=400,
+        )
+
+    return jsonify(
+        {
+            "success": True,
+            "connected": True,
+            "message": "Oracle bağlantı testi başarılı. Girilen bilgiler doğrulandı.",
+            "invalid_fields": [],
+            "checks": checks,
+        }
+    )
 
 
 @app.route("/api/start_task", methods=["POST"])
